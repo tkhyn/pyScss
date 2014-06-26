@@ -318,6 +318,9 @@ class SourceFile(object):
         return codestr
 
 
+class ProhibitedLocationException(Exception):
+    pass
+
 class Scss(object):
     def __init__(self,
             scss_vars=None, scss_opts=None, scss_files=None, super_selector=None,
@@ -935,7 +938,28 @@ class Scss(object):
             name = dequote(name.strip())
 
             # Protect against going to prohibited places...
-            if any(scary_token in name for scary_token in ('..', '://', 'url(')):
+            try:
+                for scary_token in ('..', '://', 'url('):
+                    if scary_token in name:
+                        if scary_token == '..' and not rule.source_file.is_string:
+                            # check if a relative import links outside the PROJECT_ROOT
+                            # check the relative import path (is it in a load path
+                            # ?)and transform the name if applicable
+                            start_path = os.path.dirname(rule.source_file.full_filename)
+                            full_path = os.path.abspath(os.path.join(start_path, name))
+                            for p in self.search_paths:
+                                try:
+                                    name = os.path.relpath(full_path, p)
+                                except ValueError:
+                                    # a ValueError is raised if full_path and p are not on the same drive on win32
+                                    pass
+                                if '..' not in name:
+                                    break
+                            else:
+                                raise ProhibitedLocationException()
+                            continue
+                        raise ProhibitedLocationException()
+            except ProhibitedLocationException:
                 rule.properties.append((block.prop, None))
                 warnings.warn("Ignored import: %s" % name, RuntimeWarning)
                 continue

@@ -25,6 +25,11 @@ logger.addHandler(console)
 def test_pair_programmatic(scss_file_pair):
     scss_fn, css_fn = scss_file_pair
 
+    # look for a config script related to the pair and execute it if found
+    cfg_script = scss_fn.replace('.scss', '.py')
+    if os.path.exists(cfg_script):
+        execfile(cfg_script)
+
     with open(scss_fn) as fh:
         source = fh.read()
     try:
@@ -43,5 +48,20 @@ def test_pair_programmatic(scss_file_pair):
     # Normalize leading and trailing newlines
     actual = actual.strip('\n')
     expected = expected.strip('\n')
+
+    assert expected == actual
+
+
+def test_rel_import():
+
+    scss_vars = {}
+    _scss = scss.Scss(scss_vars=scss_vars)
+
+    actual = _scss.compile(scss_file=os.path.join(os.path.dirname(__file__),
+                                                  'files', 'general',
+                                                  'relative-import.fscss'))
+
+    expected = open(os.path.join(os.path.dirname(__file__), 'files',
+                                 'general', 'relative-import.css')).read()
 
     assert expected == actual
