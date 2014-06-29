@@ -102,9 +102,25 @@ def sprite_map_svg(g, asset_path, files, **kwargs):
     if not Iconizr:
         raise Exception("SVG manipulation requires pyconizr")
 
-    url = ''
+    iconizr = Iconizr(**{
+        'in': [f[0] for f in files],
+        'out-sprite': asset_path,
+        'render': None,
+        'png': False,
+    })
+
+    iconizr.iconize()
+
     sizes = []
     offsets = []
+    for icon in iconizr.icons:
+        sizes.append(icon.get_dimensions())
+        offsets.append(icon.get_position())
+
+    if kwargs.get('inline', False):
+        url = iconizr.sprite.data_URI()
+    else:
+        url = '%s%s' % (config.ASSETS_URL, os.path.split(asset_path)[1])
 
     return url, sizes, offsets
 
