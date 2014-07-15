@@ -357,6 +357,8 @@ class Number(Value):
 
     def __mul__(self, other):
         if not isinstance(other, Number):
+            if isinstance(other, Color):
+                return other.__mul__(self)
             return NotImplemented
 
         amount = self.value * other.value

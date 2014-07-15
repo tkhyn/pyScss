@@ -1102,7 +1102,7 @@ class Scss(object):
             // It will also apply the image dimensions if $dimensions is true.
             @mixin %(map_name)s-sprite($name, $dimensions: $%(map_name)s-sprite-dimensions, $offset-x: 0, $offset-y: 0) {
                 @extend #{$%(map_name)s-sprite-base-class};
-                @include sprite($%(map_name)s-sprites, $name, $dimensions, $offset-x, $offset-y, False);
+                @include sprite($%(map_name)s-sprites, $name, $dimensions, $offset-x, $offset-y);
             }
 
             @mixin %(map_name)s-sprites($sprite-names, $dimensions: $%(map_name)s-sprite-dimensions) {
