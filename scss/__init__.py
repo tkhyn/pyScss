@@ -1077,7 +1077,11 @@ class Scss(object):
             setdefault(n + '-position', position)
             setdefault(n + '-spacing', spacing)
             setdefault(n + '-repeat', repeat)
-        rule.namespace.set_variable('$' + map_name + '-' + 'sprites', sprite_map(block.argument, **kwargs))
+
+        sprite_asset = sprite_map(block.argument, **kwargs)
+        rule.namespace.set_variable('$' + map_name + '-' + 'sprites',
+                                    sprite_asset)
+
         ret = '''
             @import "compass/utilities/sprites/base";
 
@@ -1085,6 +1089,11 @@ class Scss(object):
             // The %(map_name)s-sprite mixin will do so for you.
             #{$%(map_name)s-sprite-base-class} {
                 background: $%(map_name)s-sprites;
+                @if sprite_fallback($%(map_name)s-sprites) {
+                    &.nosvg {
+                        background: sprite_fallback($%(map_name)s-sprites);
+                    }
+                }
             }
 
             // Use this to set the dimensions of an element

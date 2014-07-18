@@ -1,6 +1,9 @@
 .svg-sprite, .svg-red-triangle, .svg-yellow-star {
   background: url(static/assets/svg-6e_w0_3w_F_ms0j0rbF13w.svg) no-repeat;
 }
+.svg-sprite.nosvg, .nosvg.svg-red-triangle, .nosvg.svg-yellow-star {
+  background: url(static/assets/svg-6e_w0_3w_F_ms0j0rbF13w.png) no-repeat;
+}
 .svg-red-triangle {
   background-position: 0px 0px;
 }

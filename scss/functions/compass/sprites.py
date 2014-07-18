@@ -106,7 +106,7 @@ def sprite_map_svg(g, asset_path, files, **kwargs):
         'in': [f[0] for f in files],
         'out-sprite': asset_path,
         'render': None,
-        'png': False,
+        'png': True,
     })
 
     iconizr.iconize()
@@ -119,10 +119,12 @@ def sprite_map_svg(g, asset_path, files, **kwargs):
 
     if kwargs.get('inline', False):
         url = iconizr.sprite.data_URI()
+        fallback = iconizr.sprite.png.data_URI()
     else:
-        url = '%s%s' % (config.ASSETS_URL, os.path.split(asset_path)[1])
+        url = '%s%s' % (config.ASSETS_URL, iconizr.sprite.filename)
+        fallback = '%s%s' % (config.ASSETS_URL, iconizr.sprite.png.filename)
 
-    return url, sizes, offsets
+    return url, sizes, offsets, fallback
 
 
 def sprite_map_png(g, asset_path, files, **kwargs):
@@ -319,7 +321,7 @@ def sprite_map_png(g, asset_path, files, **kwargs):
             log.exception("Error while saving image")
             inline = True
 
-    return url, sizes, offsets
+    return url, sizes, offsets, None
 
 
 sprite_funcs = {'svg': sprite_map_svg, 'png': sprite_map_png}
@@ -411,6 +413,9 @@ def sprite_map(g, **kwargs):
                         asset = inline_asset
                     else:
                         asset = file_asset
+
+                    fb_asset = sprite_map.get('*fb*', None)
+
                 except:
                     pass
 
@@ -424,7 +429,7 @@ def sprite_map(g, **kwargs):
                             break
 
             if sprite_map is None or asset is None:
-                url, sizes, offsets = sprite_funcs[map_type](g, asset_path, files, **kwargs)
+                url, sizes, offsets, fallback = sprite_funcs[map_type](g, asset_path, files, **kwargs)
 
                 filetime = int(now_time)
 
@@ -440,14 +445,21 @@ def sprite_map(g, **kwargs):
                     selector = spl[-1] if len(spl) > 1 else None
                     selectors.append(selector)
 
-                if not inline and cache_buster:
-                    url += '?_=%s' % filetime
+                def make_asset(url):
+                    if not inline and cache_buster:
+                        url += '?_=%s' % filetime
+                    url = 'url(%s)' % escape(url)
+                    if inline:
+                        asset = inline_asset = List([String.unquoted(url), String.unquoted(repeat)])
+                    else:
+                        asset = file_asset = List([String.unquoted(url), String.unquoted(repeat)])
+                    return asset
 
-                url = 'url(%s)' % escape(url)
-                if inline:
-                    asset = inline_asset = List([String.unquoted(url), String.unquoted(repeat)])
+                asset = make_asset(url)
+                if fallback:
+                    fb_asset = make_asset(fallback)
                 else:
-                    asset = file_asset = List([String.unquoted(url), String.unquoted(repeat)])
+                    fb_asset = None
 
                 names = tuple(os.path.splitext(os.path.basename(file_))[0] for file_, storage in files)
                 tnames = tuple(tfiles[i] + n for i, n in enumerate(names))
@@ -459,6 +471,7 @@ def sprite_map(g, **kwargs):
                 sprite_map['*k*'] = key
                 sprite_map['*n*'] = map_name
                 sprite_map['*t*'] = filetime
+                sprite_map['*fb*'] = fb_asset
 
                 sizes = zip(files, sizes)
                 cache_tmp = tempfile.NamedTemporaryFile(delete=False, dir=ASSETS_ROOT)
@@ -652,3 +665,13 @@ def sprite_has_selector(map, sprite, selector):
     sprite_name = String.unquoted(sprite).value
     sprite = sprite_map and sprite_map.get(sprite_name + '_' + selector.value)
     return Boolean(sprite)
+
+
+@register('sprite-fallback',1)
+def sprite_fallback(map):
+    map = map.render()
+    sprite_map = sprite_maps.get(map)
+    fb = sprite_map['*fb*']
+    if fb:
+        return fb
+    return Boolean(False)
