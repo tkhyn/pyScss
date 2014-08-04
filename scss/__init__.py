@@ -72,7 +72,8 @@ from scss.functions import ALL_BUILTINS_LIBRARY
 from scss.functions.compass.sprites import sprite_map
 from scss.rule import Namespace, SassRule, UnparsedBlock
 from scss.types import Boolean, List, Null, Number, String, Undefined
-from scss.util import dequote, normalize_var, print_timing  # profile
+from scss.util import dequote, normalize_var, print_timing, \
+                      glob_deepest_defined_dir # profile
 
 log = logging.getLogger(__name__)
 
@@ -1057,7 +1058,7 @@ class Scss(object):
             return
 
         # Populate namespace with sprite variables
-        map_name = os.path.normpath(os.path.dirname(to_import)).replace(os.sep, '_')
+        map_name = os.path.split(glob_deepest_defined_dir(to_import))[1]
         kwargs = {}
 
         def setdefault(var, val):

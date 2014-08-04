@@ -6,6 +6,8 @@ http://compass-style.org/reference/compass/utilities/sprites/
 from __future__ import absolute_import
 from __future__ import unicode_literals
 
+import re
+
 import six
 
 import glob
@@ -40,7 +42,8 @@ from scss.functions.compass import _image_size_cache
 from scss.functions.compass.layouts import PackedSpritesLayout, HorizontalSpritesLayout, VerticalSpritesLayout, DiagonalSpritesLayout
 from scss.functions.library import FunctionLibrary
 from scss.types import Color, List, Number, String, Boolean
-from scss.util import escape, getmtime, make_data_url, make_filename_hash
+from scss.util import escape, getmtime, make_data_url, make_filename_hash, \
+                      glob_deepest_defined_dir
 
 log = logging.getLogger(__name__)
 
@@ -345,7 +348,6 @@ def sprite_map(g, **kwargs):
     files = None
     rfiles = None
     tfiles = None
-    map_type = None
     map_name = None
 
     if _k_ in sprite_maps:
@@ -354,6 +356,7 @@ def sprite_map(g, **kwargs):
         files = []
         rfiles = []
         tfiles = []
+        common_dir = None
         for _glob in globs:
             if '..' not in _glob:  # Protect against going to prohibited places...
                 if callable(config.STATIC_ROOT):
@@ -365,12 +368,26 @@ def sprite_map(g, **kwargs):
                 if _files:
                     files.extend(_files)
                     rfiles.extend(_rfiles)
-                    base_name = os.path.normpath(os.path.dirname(_glob)).replace(os.sep, '_')
-                    map_name, _, _map_type = base_name.partition('.')
+
+                    base_path = glob_deepest_defined_dir(_glob)
+
+                    if common_dir:
+                        # finds the deepest common directory between base_path
+                        # and common_dir
+                        rel = os.path.split(os.path.relpath(base_path, path, common_dir))
+                        i = 0
+                        while len(rel) > i and rel[i] == '..':
+                            common_dir = os.path.dirname(common_dir)
+                    else:
+                        common_dir = base_path
+
+                    _map_type = os.path.split(base_path)[1].partition('.')[2]
                     if _map_type:
-                        map_type = _map_type.lower()
                         _map_type += '-'
-                    tfiles.extend([_map_type] * len(_files))
+                    tfiles.extend([_map_type] * len(files))
+
+        map_name = os.path.split(common_dir)[1]
+
 
     if files is not None:
         if not files:
@@ -378,12 +395,12 @@ def sprite_map(g, **kwargs):
             return String.unquoted('')
 
         # detects if we should generate a PNG or SVG sprite
-        if not map_type:
-            for f, _ in files:
-                ext = os.path.splitext(f)[1].strip('.').lower()
-                if ext in ('png', 'svg'):
-                    map_type = ext
-                    break
+        map_type = None
+        for f, _ in files:
+            ext = os.path.splitext(f)[1].strip('.').lower()
+            if ext in ('png', 'svg'):
+                map_type = ext
+                break
 
         if map_type:
 

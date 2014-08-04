@@ -119,6 +119,17 @@ def make_filename_hash(key):
     return base64.b64encode(key_hash, b'__').decode('ascii').rstrip('=')
 
 
+def glob_deepest_defined_dir(pattern):
+    # finds the deepest defined directory in the glob pattern
+    base_path = re.split('(?:\/|\\\\)', os.path.dirname(pattern))
+    for i, d in enumerate(base_path):
+        if re.search('((?:[^\[]|^)[*?](?:[^\]]|$)|\[[^?*]+\])', d):
+            # if a glob pattern is found in the path, restrict
+            # the path to the path preceding the glob pattern
+            base_path = base_path[:i]
+            break
+    return os.path.join(*base_path)
+
 ################################################################################
 # Function timing decorator
 profiling = {}
