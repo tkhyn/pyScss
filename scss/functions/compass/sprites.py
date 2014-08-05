@@ -374,7 +374,7 @@ def sprite_map(g, **kwargs):
                     if common_dir:
                         # finds the deepest common directory between base_path
                         # and common_dir
-                        rel = os.path.split(os.path.relpath(base_path, path, common_dir))
+                        rel = os.path.split(os.path.relpath(base_path, common_dir))
                         i = 0
                         while len(rel) > i and rel[i] == '..':
                             common_dir = os.path.dirname(common_dir)
