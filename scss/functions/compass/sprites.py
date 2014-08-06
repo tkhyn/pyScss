@@ -101,47 +101,450 @@ def alpha_composite(im1, im2, offset=None, box=None, opacity=1):
     return im1
 
 
-def sprite_map_svg(g, asset_path, files, **kwargs):
-    if not Iconizr:
-        raise Exception("SVG manipulation requires pyconizr")
-
-    iconizr = Iconizr(**{
-        'in': [f[0] for f in files],
-        'out-sprite': asset_path,
-        'render': None,
-        'png': True,
-    })
-
-    iconizr.iconize()
-
-    sizes = []
-    offsets = []
-    for icon in iconizr.icons:
-        sizes.append(icon.get_dimensions())
-        offsets.append(icon.get_position())
-
-    if kwargs.get('inline', False):
-        url = iconizr.sprite.data_URI()
-        fallback = iconizr.sprite.png.data_URI()
-    else:
-        url = '%s%s' % (config.ASSETS_URL, iconizr.sprite.filename)
-        fallback = '%s%s' % (config.ASSETS_URL, iconizr.sprite.png.filename)
-
-    return url, sizes, offsets, fallback
-
-
-def sprite_map_png(g, asset_path, files, **kwargs):
+class SpriteMap(object):
     """
-    Generates a png sprite map from the files matching the glob pattern.
+    SVG or PNG sprite map object
+    """
+
+    def __init__(self, g, **kwargs):
+        """
+        Creates the sprite map or retrieves it from the cache
+        """
+
+        self.g = g
+        self.now_time = time.time()
+        self.globs = sorted(_g.strip(' "')
+                            for _g in String(g, quotes=None).value.split(','))
+
+        self.name = None
+        self._collect_files()
+
+        # detects the sprite type (PNG or SVG)
+        for f, _ in self.files:
+            ext = os.path.splitext(f)[1].strip('.').lower()
+            if ext in ('png', 'svg'):
+                self.type = ext
+                break
+        else:
+            self.type = None
+
+        self.asset = String.unquoted('')
+        if self.files is None:
+            self.asset = String.unquoted('')
+        elif not self.files:
+            log.error("Nothing found at '%s'", g)
+        elif not self.type:
+            log.error('Unhandled sprite type, must be either PNG or SVG')
+        else:
+            # all is good, sprite map can be generated / retrieved
+
+            key = [f for (f, s) in self.files] + [repr(kwargs), config.ASSETS_URL]
+            self.key = self.name + '-' + make_filename_hash(key)
+
+            self.ASSETS_ROOT = config.ASSETS_ROOT or os.path.join(config.STATIC_ROOT, 'assets')
+            self.asset_file = self.key + '.' + self.type
+            self.asset_path = os.path.join(self.ASSETS_ROOT, self.asset_file)
+            self.cache_path = os.path.join(config.CACHE_ROOT or self.ASSETS_ROOT, self.asset_file + '.cache')
+
+            self.inline = Boolean(kwargs.get('inline', False))
+
+            self._retrieve_from_cache()
+
+            if sprite_map is None or self.asset is None:
+                self._generate_sprite(**kwargs)
+
+    def _collect_files(self):
+        _k_ = ','.join(self.globs)
+
+        self.files = None
+        self.rfiles = None
+        self.tfiles = None
+
+        if _k_ in sprite_maps:
+            sprite_maps[_k_]['*'] = self.now_time
+        else:
+            self.files = []
+            self.rfiles = []
+            self.tfiles = []
+            common_dir = None
+            for _glob in self.globs:
+                if '..' not in _glob:  # Protect against going to prohibited places...
+                    if callable(config.STATIC_ROOT):
+                        _rfiles = _files = sorted(config.STATIC_ROOT(_glob))
+                    else:
+                        _files = glob.glob(os.path.join(config.STATIC_ROOT, _glob))
+                        _files = sorted((f, None) for f in _files)
+                        _rfiles = [(rf[len(config.STATIC_ROOT):], s) for rf, s in _files]
+                    if _files:
+                        self.files.extend(_files)
+                        self.rfiles.extend(_rfiles)
+
+                        base_path = glob_deepest_defined_dir(_glob)
+
+                        if common_dir:
+                            # finds the deepest common directory between base_path
+                            # and common_dir
+                            rel = os.path.split(os.path.relpath(base_path, common_dir))
+                            i = 0
+                            while len(rel) > i and rel[i] == '..':
+                                common_dir = os.path.dirname(common_dir)
+                        else:
+                            common_dir = base_path
+
+                        _map_type = os.path.split(base_path)[1].partition('.')[2]
+                        if _map_type:
+                            _map_type += '-'
+                        self.tfiles.extend([_map_type] * len(self.files))
+
+            self.name = os.path.split(common_dir)[1]
+
+    def _retrieve_from_cache(self, **kwargs):
+        """
+        Retrieves the sprite map asset if it is cached
+        """
+
+        self.sprite_map = None
+        self.asset = None
+        file_asset = None
+        inline_asset = None
+        if os.path.exists(self.asset_path) or self.inline:
+            try:
+                # check if the asset is cached
+                save_time, file_asset, inline_asset, self.sprite_map, self.sizes = pickle.load(open(self.cache_path))
+                if file_asset:
+                    sprite_maps[file_asset.render()] = self.sprite_map
+                if inline_asset:
+                    sprite_maps[inline_asset.render()] = self.sprite_map
+                if self.inline:
+                    self.asset = inline_asset
+                else:
+                    self.asset = file_asset
+
+                # fallback asset (used for PNG fallbacks of SVG sprites)
+                self.fb_asset = self.sprite_map.get('*fb*', None)
+
+            except:
+                pass
+
+            if self.sprite_map:
+                for file_, storage in self.files:
+                    _time = getmtime(file_, storage)
+                    if save_time < _time:
+                        if _time > self.now_time:
+                            log.warning("File '%s' has a date in the future (cache ignored)" % file_)
+                        self.sprite_map = None  # Invalidate cached sprite map
+                        break
+
+    def _generate_sprite(self, **kwargs):
+
+        self._get_layout(**kwargs)
+        self._get_positions_and_paddings(**kwargs)
+
+        url, sizes, offsets, fallback = \
+            getattr(self, '_make_' + self.type)(**kwargs)
+
+        filetime = int(self.now_time)
+
+        cache_buster = Boolean(kwargs.get('cache_buster', True))
+        repeat = String.unquoted(kwargs.get('repeat', 'no-repeat')).value
+
+        # extracting selector for compass spriting's magic selectors
+        # http://compass-style.org/help/tutorials/spriting/magic-selectors/
+        selectors = []
+        for f, storage in self.files:
+            name = os.path.splitext(os.path.basename(f))[0]
+            spl = name.split('_')
+            selector = spl[-1] if len(spl) > 1 else None
+            selectors.append(selector)
+
+        inline_asset = None
+        file_asset = None
+
+        def make_asset(url):
+            if not self.inline and cache_buster:
+                url += '?_=%s' % filetime
+            url = 'url(%s)' % escape(url)
+            if self.inline:
+                asset = inline_asset = List([String.unquoted(url), String.unquoted(repeat)])
+            else:
+                asset = file_asset = List([String.unquoted(url), String.unquoted(repeat)])
+            return asset
+
+        self.asset = make_asset(url)
+        if fallback:
+            fb_asset = make_asset(fallback)
+        else:
+            fb_asset = None
+
+        names = tuple(os.path.splitext(os.path.basename(file_))[0] for file_, storage in self.files)
+        tnames = tuple(self.tfiles[i] + n for i, n in enumerate(names))
+
+        # Add the new object:
+        sprite_map = dict(zip(tnames, zip(sizes, self.rfiles, offsets, selectors)))
+        sprite_map['*'] = self.now_time
+        sprite_map['*f*'] = self.asset_file
+        sprite_map['*k*'] = self.key
+        sprite_map['*n*'] = self.name
+        sprite_map['*t*'] = filetime
+        sprite_map['*fb*'] = fb_asset
+
+        self.sizes = zip(self.files, sizes)
+        cache_tmp = tempfile.NamedTemporaryFile(delete=False, dir=self.ASSETS_ROOT)
+        pickle.dump((self.now_time, file_asset, inline_asset, sprite_map, self.sizes), cache_tmp)
+        cache_tmp.close()
+        if os.path.exists(self.cache_path):
+            # renaming when replacing an existing file causes an error on windows
+            os.remove(self.cache_path)
+        os.rename(cache_tmp.name, self.cache_path)
+
+        # Use the sorted list to remove older elements (keep only 500 objects):
+        if len(sprite_maps) > MAX_SPRITE_MAPS:
+            for a in sorted(sprite_maps, key=lambda a: sprite_maps[a]['*'], reverse=True)[KEEP_SPRITE_MAPS:]:
+                del sprite_maps[a]
+            log.warning("Exceeded maximum number of sprite maps (%s)" % MAX_SPRITE_MAPS)
+        sprite_maps[self.asset.render()] = sprite_map
+
+        for file_, size in self.sizes:
+            _image_size_cache[file_] = size
+
+    def _get_layout(self, **kwargs):
+        self.layout = String.unquoted(kwargs.get('direction',
+                                      kwargs.get('layout',
+                                      config.SPRTE_MAP_DIRECTION))).value
+
+    def _get_positions_and_paddings(self, **kwargs):
+
+        position = Number(kwargs.get('position', 0))
+        if not position.is_simple_unit('%') and position.value > 1:
+            position = position.value / 100.0
+        else:
+            position = position.value
+        if position < 0:
+            position = 0.0
+        elif position > 1:
+            position = 1.0
+
+        padding = kwargs.get('padding', kwargs.get('spacing', Number(0)))
+        padding = [int(Number(v).value) for v in List.from_maybe(padding)]
+        padding = (padding * 4)[:4]
+
+        self.positions = []
+        self.paddings = []
+
+        for file_, storage in self.files:
+            name = os.path.splitext(os.path.basename(file_))[0].replace('-', '_')
+
+            _position = kwargs.get(name + '_position')
+            if _position is None:
+                _position = position
+            else:
+                _position = Number(_position)
+                if not _position.is_simple_unit('%') and _position.value > 1:
+                    _position = _position.value / 100.0
+                else:
+                    _position = _position.value
+                if _position < 0:
+                    _position = 0.0
+                elif _position > 1:
+                    _position = 1.0
+            self.positions.append(_position)
+
+            _padding = kwargs.get(name + '_padding', kwargs.get(name + '_spacing'))
+            if _padding is None:
+                _padding = padding
+            else:
+                _padding = [int(Number(v).value) for v in List.from_maybe(_padding)]
+                _padding = (_padding * 4)[:4]
+            self.paddings.append(_padding)
+
+    def _make_svg(self, **kwargs):
+        """
+        Generates a SVG sprite
+        """
+
+        if not Iconizr:
+            raise Exception("SVG manipulation requires pyconizr")
+
+        iconizr = Iconizr(**{
+            'in': [f[0] for f in self.files],
+            'out-sprite': self.asset_path,
+            'render': None,
+            'png': True,
+        })
+
+        iconizr.iconize()
+
+        sizes = []
+        offsets = []
+        for icon in iconizr.icons:
+            sizes.append(icon.get_dimensions())
+            offsets.append(icon.get_position())
+
+        if self.inline:
+            url = iconizr.sprite.data_URI()
+            fallback = iconizr.sprite.png.data_URI()
+        else:
+            url = '%s%s' % (config.ASSETS_URL, iconizr.sprite.filename)
+            fallback = '%s%s' % (config.ASSETS_URL, iconizr.sprite.png.filename)
+
+        return url, sizes, offsets, fallback
+
+    def _make_png(self, **kwargs):
+        """
+        Generate PNG sprite
+        """
+        if not Image:
+            raise Exception("Images manipulation require PIL")
+
+        collapse = kwargs.get('collapse', Number(0))
+        if isinstance(collapse, List):
+            collapse_x = int(Number(collapse[0]).value)
+            collapse_y = int(Number(collapse[-1]).value)
+        else:
+            collapse_x = collapse_y = int(Number(collapse).value)
+        if 'collapse_x' in kwargs:
+            collapse_x = int(Number(kwargs['collapse_x']).value)
+        if 'collapse_y' in kwargs:
+            collapse_y = int(Number(kwargs['collapse_y']).value)
+
+        dst_colors = kwargs.get('dst_color')
+        dst_colors = [list(Color(v).value[:3]) for v in List.from_maybe(dst_colors) if v]
+        src_colors = kwargs.get('src_color', Color.from_name('black'))
+        src_colors = [tuple(Color(v).value[:3]) for v in List.from_maybe(src_colors)]
+        len_colors = max(len(dst_colors), len(src_colors))
+        dst_colors = (dst_colors * len_colors)[:len_colors]
+        src_colors = (src_colors * len_colors)[:len_colors]
+
+        def images():
+            for file_, storage in self.files:
+                if storage is not None:
+                    _file = storage.open(file_)
+                else:
+                    _file = file_
+                _image = Image.open(_file)
+                yield _image
+
+        has_dst_colors = False
+        all_dst_colors = []
+        all_src_colors = []
+
+        for file_, storage in self.files:
+            name = os.path.splitext(os.path.basename(file_))[0].replace('-', '_')
+
+            _dst_colors = kwargs.get(name + '_dst_color')
+            if _dst_colors is None:
+                _dst_colors = dst_colors
+                if dst_colors:
+                    has_dst_colors = True
+            else:
+                has_dst_colors = True
+                _dst_colors = [list(Color(v).value[:3]) for v in List.from_maybe(_dst_colors) if v]
+            _src_colors = kwargs.get(name + '_src_color', Color.from_name('black'))
+            if _src_colors is None:
+                _src_colors = src_colors
+            else:
+                _src_colors = [tuple(Color(v).value[:3]) for v in List.from_maybe(_src_colors)]
+            _len_colors = max(len(_dst_colors), len(_src_colors))
+            _dst_colors = (_dst_colors * _len_colors)[:_len_colors]
+            _src_colors = (_src_colors * _len_colors)[:_len_colors]
+            all_dst_colors.append(_dst_colors)
+            all_src_colors.append(_src_colors)
+
+        sizes = tuple((collapse_x or i.size[0], collapse_y or i.size[1]) for i in images())
+
+        if self.layout == 'horizontal':
+            layout = HorizontalSpritesLayout(sizes, self.paddings, position=self.positions)
+        elif self.layout == 'vertical':
+            layout = VerticalSpritesLayout(sizes, self.paddings, position=self.positions)
+        elif self.layout == 'diagonal':
+            layout = DiagonalSpritesLayout(sizes, self.paddings)
+        elif self.layout == 'smart':
+            layout = PackedSpritesLayout(sizes, self.paddings)
+        else:
+            raise Exception("Invalid direction %r" % (self.layout,))
+        layout_positions = list(layout)
+
+        new_image = Image.new(
+            mode='RGBA',
+            size=(layout.width, layout.height),
+            color=(0, 0, 0, 0)
+        )
+
+        useless_dst_color = has_dst_colors
+
+        offsets = []
+        for i, image in enumerate(images()):
+            x, y, width, height, cssx, cssy, cssw, cssh = layout_positions[i]
+            iwidth, iheight = image.size
+
+            if has_dst_colors:
+                pixdata = image.load()
+                for _y in xrange(iheight):
+                    for _x in xrange(iwidth):
+                        pixel = pixdata[_x, _y]
+                        a = pixel[3] if len(pixel) == 4 else 255
+                        if a:
+                            rgb = pixel[:3]
+                            for j, dst_color in enumerate(all_dst_colors[i]):
+                                if rgb == all_src_colors[i][j]:
+                                    new_color = tuple([int(c) for c in dst_color] + [a])
+                                    if pixel != new_color:
+                                        pixdata[_x, _y] = new_color
+                                        useless_dst_color = False
+                                    break
+
+            if iwidth != width or iheight != height:
+                cy = 0
+                while cy < iheight:
+                    cx = 0
+                    while cx < iwidth:
+                        new_image = alpha_composite(new_image, image, (x, y), (cx, cy, cx + width, cy + height))
+                        cx += width
+                    cy += height
+            else:
+                new_image.paste(image, (x, y))
+            offsets.append((cssx, cssy))
+
+        if useless_dst_color:
+            log.warning("Useless use of $dst-color in sprite map for files at '%s' (never used for)" % self.g)
+
+        if self.inline:
+            output = six.BytesIO()
+            new_image.save(output, format='PNG')
+            contents = output.getvalue()
+            output.close()
+            mime_type = 'image/png'
+            url = make_data_url(mime_type, contents)
+        else:
+            try:
+                new_image.save(self.asset_path)
+                url = '%s%s' % (config.ASSETS_URL, os.path.split(self.asset_path)[1])
+            except IOError:
+                log.exception("Error while saving image")
+                self.inline = True
+
+        return url, sizes, offsets, None
+
+
+@register('sprite-map')
+def sprite_map(g, **kwargs):
+    """
+    Generates SVG and/or PNG sprite map
+    The type of sprite map being generated depends on the first SVG or PNG file
+    matched by the glob pattern.
+
     Uses the keyword-style arguments passed in to control the placement.
 
-    $direction - Sprite map layout. Can be `vertical` (default), `horizontal`, `diagonal` or `smart`.
+    $direction, $layout - Sprite map layout. Can be `vertical` (default), `horizontal`, `diagonal` or `smart`.
 
     $position - For `horizontal` and `vertical` directions, the position of the sprite. (defaults to `0`)
     $<sprite>-position - Position of a given sprite.
 
     $padding, $spacing - Adds paddings to sprites (top, right, bottom, left). (defaults to `0, 0, 0, 0`)
     $<sprite>-padding, $<sprite>-spacing - Padding for a given sprite.
+
+
+    For PNG sprites, the following supplementary keyword arguments can be used:
 
     $dst-color - Together with `$src-color`, forms a map of source colors to be converted to destiny colors (same index of `$src-color` changed to `$dst-color`).
     $<sprite>-dst-color - Destiny colors for a given sprite. (defaults to `$dst-color`)
@@ -153,367 +556,8 @@ def sprite_map_png(g, asset_path, files, **kwargs):
     $collapse-x  - Collapses a size for `x`.
     $collapse-y  - Collapses a size for `y`.
     """
-    if not Image:
-        raise Exception("Images manipulation require PIL")
 
-    inline = Boolean(kwargs.get('inline', False))
-    direction = String.unquoted(kwargs.get('direction', config.SPRTE_MAP_DIRECTION)).value
-    collapse = kwargs.get('collapse', Number(0))
-    if isinstance(collapse, List):
-        collapse_x = int(Number(collapse[0]).value)
-        collapse_y = int(Number(collapse[-1]).value)
-    else:
-        collapse_x = collapse_y = int(Number(collapse).value)
-    if 'collapse_x' in kwargs:
-        collapse_x = int(Number(kwargs['collapse_x']).value)
-    if 'collapse_y' in kwargs:
-        collapse_y = int(Number(kwargs['collapse_y']).value)
-
-    position = Number(kwargs.get('position', 0))
-    if not position.is_simple_unit('%') and position.value > 1:
-        position = position.value / 100.0
-    else:
-        position = position.value
-    if position < 0:
-        position = 0.0
-    elif position > 1:
-        position = 1.0
-
-    padding = kwargs.get('padding', kwargs.get('spacing', Number(0)))
-    padding = [int(Number(v).value) for v in List.from_maybe(padding)]
-    padding = (padding * 4)[:4]
-
-    dst_colors = kwargs.get('dst_color')
-    dst_colors = [list(Color(v).value[:3]) for v in List.from_maybe(dst_colors) if v]
-    src_colors = kwargs.get('src_color', Color.from_name('black'))
-    src_colors = [tuple(Color(v).value[:3]) for v in List.from_maybe(src_colors)]
-    len_colors = max(len(dst_colors), len(src_colors))
-    dst_colors = (dst_colors * len_colors)[:len_colors]
-    src_colors = (src_colors * len_colors)[:len_colors]
-
-    def images():
-        for file_, storage in files:
-            if storage is not None:
-                _file = storage.open(file_)
-            else:
-                _file = file_
-            _image = Image.open(_file)
-            yield _image
-
-    has_dst_colors = False
-    all_dst_colors = []
-    all_src_colors = []
-    all_positions = []
-    all_paddings = []
-
-    for file_, storage in files:
-        name = os.path.splitext(os.path.basename(file_))[0].replace('-', '_')
-
-        _position = kwargs.get(name + '_position')
-        if _position is None:
-            _position = position
-        else:
-            _position = Number(_position)
-            if not _position.is_simple_unit('%') and _position.value > 1:
-                _position = _position.value / 100.0
-            else:
-                _position = _position.value
-            if _position < 0:
-                _position = 0.0
-            elif _position > 1:
-                _position = 1.0
-        all_positions.append(_position)
-
-        _padding = kwargs.get(name + '_padding', kwargs.get(name + '_spacing'))
-        if _padding is None:
-            _padding = padding
-        else:
-            _padding = [int(Number(v).value) for v in List.from_maybe(_padding)]
-            _padding = (_padding * 4)[:4]
-        all_paddings.append(_padding)
-
-        _dst_colors = kwargs.get(name + '_dst_color')
-        if _dst_colors is None:
-            _dst_colors = dst_colors
-            if dst_colors:
-                has_dst_colors = True
-        else:
-            has_dst_colors = True
-            _dst_colors = [list(Color(v).value[:3]) for v in List.from_maybe(_dst_colors) if v]
-        _src_colors = kwargs.get(name + '_src_color', Color.from_name('black'))
-        if _src_colors is None:
-            _src_colors = src_colors
-        else:
-            _src_colors = [tuple(Color(v).value[:3]) for v in List.from_maybe(_src_colors)]
-        _len_colors = max(len(_dst_colors), len(_src_colors))
-        _dst_colors = (_dst_colors * _len_colors)[:_len_colors]
-        _src_colors = (_src_colors * _len_colors)[:_len_colors]
-        all_dst_colors.append(_dst_colors)
-        all_src_colors.append(_src_colors)
-
-    sizes = tuple((collapse_x or i.size[0], collapse_y or i.size[1]) for i in images())
-
-    if direction == 'horizontal':
-        layout = HorizontalSpritesLayout(sizes, all_paddings, position=all_positions)
-    elif direction == 'vertical':
-        layout = VerticalSpritesLayout(sizes, all_paddings, position=all_positions)
-    elif direction == 'diagonal':
-        layout = DiagonalSpritesLayout(sizes, all_paddings)
-    elif direction == 'smart':
-        layout = PackedSpritesLayout(sizes, all_paddings)
-    else:
-        raise Exception("Invalid direction %r" % (direction,))
-    layout_positions = list(layout)
-
-    new_image = Image.new(
-        mode='RGBA',
-        size=(layout.width, layout.height),
-        color=(0, 0, 0, 0)
-    )
-
-    useless_dst_color = has_dst_colors
-
-    offsets = []
-    for i, image in enumerate(images()):
-        x, y, width, height, cssx, cssy, cssw, cssh = layout_positions[i]
-        iwidth, iheight = image.size
-
-        if has_dst_colors:
-            pixdata = image.load()
-            for _y in xrange(iheight):
-                for _x in xrange(iwidth):
-                    pixel = pixdata[_x, _y]
-                    a = pixel[3] if len(pixel) == 4 else 255
-                    if a:
-                        rgb = pixel[:3]
-                        for j, dst_color in enumerate(all_dst_colors[i]):
-                            if rgb == all_src_colors[i][j]:
-                                new_color = tuple([int(c) for c in dst_color] + [a])
-                                if pixel != new_color:
-                                    pixdata[_x, _y] = new_color
-                                    useless_dst_color = False
-                                break
-
-        if iwidth != width or iheight != height:
-            cy = 0
-            while cy < iheight:
-                cx = 0
-                while cx < iwidth:
-                    new_image = alpha_composite(new_image, image, (x, y), (cx, cy, cx + width, cy + height))
-                    cx += width
-                cy += height
-        else:
-            new_image.paste(image, (x, y))
-        offsets.append((cssx, cssy))
-
-    if useless_dst_color:
-        log.warning("Useless use of $dst-color in sprite map for files at '%s' (never used for)" % g)
-
-    if inline:
-        output = six.BytesIO()
-        new_image.save(output, format='PNG')
-        contents = output.getvalue()
-        output.close()
-        mime_type = 'image/png'
-        url = make_data_url(mime_type, contents)
-    else:
-        try:
-            new_image.save(asset_path)
-            url = '%s%s' % (config.ASSETS_URL, os.path.split(asset_path)[1])
-        except IOError:
-            log.exception("Error while saving image")
-            inline = True
-
-    return url, sizes, offsets, None
-
-
-sprite_funcs = {'svg': sprite_map_svg, 'png': sprite_map_png}
-
-
-@register('sprite-map')
-def sprite_map(g, **kwargs):
-    """
-    Generates SVG and/or PNG sprite map
-    The type of sprite map being generated depends on the first SVG or PNG file
-    matched by the glob pattern.
-    """
-
-    now_time = time.time()
-
-    globs = String(g, quotes=None).value
-    globs = sorted(g.strip(' "') for g in globs.split(','))
-
-    _k_ = ','.join(globs)
-
-    files = None
-    rfiles = None
-    tfiles = None
-    map_name = None
-
-    if _k_ in sprite_maps:
-        sprite_maps[_k_]['*'] = now_time
-    else:
-        files = []
-        rfiles = []
-        tfiles = []
-        common_dir = None
-        for _glob in globs:
-            if '..' not in _glob:  # Protect against going to prohibited places...
-                if callable(config.STATIC_ROOT):
-                    _rfiles = _files = sorted(config.STATIC_ROOT(_glob))
-                else:
-                    _files = glob.glob(os.path.join(config.STATIC_ROOT, _glob))
-                    _files = sorted((f, None) for f in _files)
-                    _rfiles = [(rf[len(config.STATIC_ROOT):], s) for rf, s in _files]
-                if _files:
-                    files.extend(_files)
-                    rfiles.extend(_rfiles)
-
-                    base_path = glob_deepest_defined_dir(_glob)
-
-                    if common_dir:
-                        # finds the deepest common directory between base_path
-                        # and common_dir
-                        rel = os.path.split(os.path.relpath(base_path, common_dir))
-                        i = 0
-                        while len(rel) > i and rel[i] == '..':
-                            common_dir = os.path.dirname(common_dir)
-                    else:
-                        common_dir = base_path
-
-                    _map_type = os.path.split(base_path)[1].partition('.')[2]
-                    if _map_type:
-                        _map_type += '-'
-                    tfiles.extend([_map_type] * len(files))
-
-        map_name = os.path.split(common_dir)[1]
-
-
-    if files is not None:
-        if not files:
-            log.error("Nothing found at '%s'", g)
-            return String.unquoted('')
-
-        # detects if we should generate a PNG or SVG sprite
-        map_type = None
-        for f, _ in files:
-            ext = os.path.splitext(f)[1].strip('.').lower()
-            if ext in ('png', 'svg'):
-                map_type = ext
-                break
-
-        if map_type:
-
-            key = [f for (f, s) in files] + [repr(kwargs), config.ASSETS_URL]
-            key = map_name + '-' + make_filename_hash(key)
-
-            asset_file = key + '.' + map_type
-            ASSETS_ROOT = config.ASSETS_ROOT or os.path.join(config.STATIC_ROOT, 'assets')
-            asset_path = os.path.join(ASSETS_ROOT, asset_file)
-            cache_path = os.path.join(config.CACHE_ROOT or ASSETS_ROOT, asset_file + '.cache')
-
-            inline = Boolean(kwargs.get('inline', False))
-
-            sprite_map = None
-            asset = None
-            file_asset = None
-            inline_asset = None
-            if os.path.exists(asset_path) or inline:
-                try:
-                    # check if the asset is cached
-                    save_time, file_asset, inline_asset, sprite_map, sizes = pickle.load(open(cache_path))
-                    if file_asset:
-                        sprite_maps[file_asset.render()] = sprite_map
-                    if inline_asset:
-                        sprite_maps[inline_asset.render()] = sprite_map
-                    if inline:
-                        asset = inline_asset
-                    else:
-                        asset = file_asset
-
-                    fb_asset = sprite_map.get('*fb*', None)
-
-                except:
-                    pass
-
-                if sprite_map:
-                    for file_, storage in files:
-                        _time = getmtime(file_, storage)
-                        if save_time < _time:
-                            if _time > now_time:
-                                log.warning("File '%s' has a date in the future (cache ignored)" % file_)
-                            sprite_map = None  # Invalidate cached sprite map
-                            break
-
-            if sprite_map is None or asset is None:
-                url, sizes, offsets, fallback = sprite_funcs[map_type](g, asset_path, files, **kwargs)
-
-                filetime = int(now_time)
-
-                cache_buster = Boolean(kwargs.get('cache_buster', True))
-                repeat = String.unquoted(kwargs.get('repeat', 'no-repeat')).value
-
-                # extracting selector for compass spriting's magic selectors
-                # http://compass-style.org/help/tutorials/spriting/magic-selectors/
-                selectors = []
-                for f, storage in files:
-                    name = os.path.splitext(os.path.basename(f))[0]
-                    spl = name.split('_')
-                    selector = spl[-1] if len(spl) > 1 else None
-                    selectors.append(selector)
-
-                def make_asset(url):
-                    if not inline and cache_buster:
-                        url += '?_=%s' % filetime
-                    url = 'url(%s)' % escape(url)
-                    if inline:
-                        asset = inline_asset = List([String.unquoted(url), String.unquoted(repeat)])
-                    else:
-                        asset = file_asset = List([String.unquoted(url), String.unquoted(repeat)])
-                    return asset
-
-                asset = make_asset(url)
-                if fallback:
-                    fb_asset = make_asset(fallback)
-                else:
-                    fb_asset = None
-
-                names = tuple(os.path.splitext(os.path.basename(file_))[0] for file_, storage in files)
-                tnames = tuple(tfiles[i] + n for i, n in enumerate(names))
-
-                # Add the new object:
-                sprite_map = dict(zip(tnames, zip(sizes, rfiles, offsets, selectors)))
-                sprite_map['*'] = now_time
-                sprite_map['*f*'] = asset_file
-                sprite_map['*k*'] = key
-                sprite_map['*n*'] = map_name
-                sprite_map['*t*'] = filetime
-                sprite_map['*fb*'] = fb_asset
-
-                sizes = zip(files, sizes)
-                cache_tmp = tempfile.NamedTemporaryFile(delete=False, dir=ASSETS_ROOT)
-                pickle.dump((now_time, file_asset, inline_asset, sprite_map, sizes), cache_tmp)
-                cache_tmp.close()
-                if os.path.exists(cache_path):
-                    # renaming when replacing an existing file causes an error on windows
-                    os.remove(cache_path)
-                os.rename(cache_tmp.name, cache_path)
-
-                # Use the sorted list to remove older elements (keep only 500 objects):
-                if len(sprite_maps) > MAX_SPRITE_MAPS:
-                    for a in sorted(sprite_maps, key=lambda a: sprite_maps[a]['*'], reverse=True)[KEEP_SPRITE_MAPS:]:
-                        del sprite_maps[a]
-                    log.warning("Exceeded maximum number of sprite maps (%s)" % MAX_SPRITE_MAPS)
-                sprite_maps[asset.render()] = sprite_map
-
-            for file_, size in sizes:
-                _image_size_cache[file_] = size
-
-            return asset
-        else:
-            log.warn('Unhandled sprite type, must be either PNG or SVG')
-
-    return String.unquoted('')
+    return SpriteMap(g, **kwargs).asset
 
 
 @register('sprite-map-name', 1)
@@ -684,7 +728,7 @@ def sprite_has_selector(map, sprite, selector):
     return Boolean(sprite)
 
 
-@register('sprite-fallback',1)
+@register('sprite-fallback', 1)
 def sprite_fallback(map):
     map = map.render()
     sprite_map = sprite_maps.get(map)
