@@ -6,8 +6,6 @@ http://compass-style.org/reference/compass/utilities/sprites/
 from __future__ import absolute_import
 from __future__ import unicode_literals
 
-import re
-
 import six
 
 import glob
@@ -357,6 +355,19 @@ class SpriteMap(object):
                 _padding = (_padding * 4)[:4]
             self.paddings.append(_padding)
 
+    def _calc_layout(self, sizes):
+        if self.layout == 'horizontal':
+            layout = HorizontalSpritesLayout(sizes, self.paddings, position=self.positions)
+        elif self.layout == 'vertical':
+            layout = VerticalSpritesLayout(sizes, self.paddings, position=self.positions)
+        elif self.layout == 'diagonal':
+            layout = DiagonalSpritesLayout(sizes, self.paddings)
+        elif self.layout == 'smart':
+            layout = PackedSpritesLayout(sizes, self.paddings)
+        else:
+            raise Exception("Invalid direction %r" % (self.layout,))
+        return layout
+
     def _make_svg(self, **kwargs):
         """
         Generates a SVG sprite
@@ -370,15 +381,20 @@ class SpriteMap(object):
             'out-sprite': self.asset_path,
             'render': None,
             'png': True,
+            'layout': 'none'
         })
 
-        iconizr.iconize()
-
-        sizes = []
+        sizes = tuple((i.width, i.height) for i in iconizr.icons)
         offsets = []
-        for icon in iconizr.icons:
-            sizes.append(icon.get_dimensions())
-            offsets.append(icon.get_position())
+        layout = self._calc_layout(sizes)
+
+        for i, pos in zip(iconizr.icons, layout):
+            i.X, i.Y = pos[:2]
+            offsets.append(tuple(pos[4:6]))
+
+        iconizr.sprite.set_dimensions(layout.width, layout.height)
+
+        iconizr.iconize()
 
         if self.inline:
             url = iconizr.sprite.data_URI()
@@ -451,17 +467,7 @@ class SpriteMap(object):
             all_src_colors.append(_src_colors)
 
         sizes = tuple((collapse_x or i.size[0], collapse_y or i.size[1]) for i in images())
-
-        if self.layout == 'horizontal':
-            layout = HorizontalSpritesLayout(sizes, self.paddings, position=self.positions)
-        elif self.layout == 'vertical':
-            layout = VerticalSpritesLayout(sizes, self.paddings, position=self.positions)
-        elif self.layout == 'diagonal':
-            layout = DiagonalSpritesLayout(sizes, self.paddings)
-        elif self.layout == 'smart':
-            layout = PackedSpritesLayout(sizes, self.paddings)
-        else:
-            raise Exception("Invalid direction %r" % (self.layout,))
+        layout = self._calc_layout(sizes)
         layout_positions = list(layout)
 
         new_image = Image.new(

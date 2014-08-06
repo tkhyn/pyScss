@@ -1,13 +1,13 @@
 .svg-sprite, .svg-red-triangle, .svg-yellow-star {
-  background: url(static/assets/svg-tJ1uOw7wQZHwsjNx3Ah9zw.svg) no-repeat;
+  background: url(static/assets/svg-bvl57LupmngLOfEf_F6C5w.svg) no-repeat;
 }
 .svg-sprite.nosvg, .nosvg.svg-red-triangle, .nosvg.svg-yellow-star {
-  background: url(static/assets/svg-tJ1uOw7wQZHwsjNx3Ah9zw.png) no-repeat;
+  background: url(static/assets/svg-bvl57LupmngLOfEf_F6C5w.png) no-repeat;
 }
 .svg-red-triangle {
   background-position: 0px 0px;
 }
 
 .svg-yellow-star {
-  background-position: 0px -32px;
+  background-position: -32px 0px;
 }
