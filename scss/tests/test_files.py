@@ -8,14 +8,20 @@ This limitation is completely arbitrary. Files starting with '_' are skipped.
 
 """
 
-from __future__ import absolute_import
+from __future__ import absolute_import, unicode_literals
 
-import os.path
+import os
 import logging
 import sys
 from importlib import import_module
 
+import six
+
 import scss
+
+
+if six.PY2:
+    from io import open
 
 
 console = logging.StreamHandler()
@@ -38,27 +44,32 @@ def test_pair_programmatic(scss_file_pair):
 
     with open(scss_fn) as fh:
         source = fh.read()
-    try:
-        with open(css_fn) as fh:
-            expected = fh.read()
-    except IOError:
-        expected = ''
+    with open(css_fn, 'r', encoding='utf8') as fh:
+        expected = fh.read()
 
     directory, _ = os.path.split(scss_fn)
     include_dir = os.path.join(directory, 'include')
     scss.config.STATIC_ROOT = os.path.join(directory, 'static')
 
-    compiler = scss.Scss(scss_opts=dict(style='expanded'), search_paths=[include_dir, directory])
-    actual = compiler.compile(source)
+    try:
+        compiler = scss.Scss(scss_opts=dict(style='expanded'), search_paths=[include_dir, directory])
+        actual = compiler.compile(source)
 
-    getattr(mod, 'tearDown', lambda:None)()
+        getattr(mod, 'tearDown', lambda:None)()
 
-    # Normalize leading and trailing newlines
-    actual = actual.strip('\n')
-    expected = expected.strip('\n')
+        # Normalize leading and trailing newlines
+        actual = actual.strip('\n')
+        expected = expected.strip('\n')
 
-    assert expected == actual
+        assert expected == actual
 
+    finally:
+        # cleanup generated assets if any
+        assets_dir = os.path.join(directory, 'static', 'assets')
+        if os.path.isdir(assets_dir):
+            for x in os.listdir(assets_dir):
+                if x != '.placeholder':
+                    os.remove(os.path.join(assets_dir, x))
 
 def test_rel_import():
 
