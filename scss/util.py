@@ -113,7 +113,7 @@ def make_filename_hash(key):
     # the expected test results
     if sys.platform == 'win32':
         # this is to make sure the hash is the same on win and unix platforms
-        key_repr = key_repr.replace('\\\\', '/')
+        key_repr = key_repr.replace(b'\\\\', b'/')
     key_repr = re.sub(b"\\bu'", b"'", key_repr)
     key_hash = hashlib.md5(key_repr).digest()
     return base64.b64encode(key_hash, b'__').decode('ascii').rstrip('=')
@@ -160,17 +160,17 @@ def profile(fn):
             profiler.disable()
             stats = pstats.Stats(profiler, stream=stream)
             stats.sort_stats('time')
-            print >>stream, ""
-            print >>stream, "=" * 100
-            print >>stream, "Stats:"
+            print >> stream, ""
+            print >> stream, "=" * 100
+            print >> stream, "Stats:"
             stats.print_stats()
-            print >>stream, "=" * 100
-            print >>stream, "Callers:"
+            print >> stream, "=" * 100
+            print >> stream, "Callers:"
             stats.print_callers()
-            print >>stream, "=" * 100
-            print >>stream, "Callees:"
+            print >> stream, "=" * 100
+            print >> stream, "Callees:"
             stats.print_callees()
-            print >>sys.stderr, stream.getvalue()
+            print >> sys.stderr, stream.getvalue()
             stream.close()
         return res
     return wrapper
