@@ -286,7 +286,7 @@ class SpriteMap(object):
         sprite_map['*n*'] = self.name
         sprite_map['*t*'] = filetime
         sprite_map['*fb*'] = fb_asset
-        sprite_map['*s*'] = new_image.size
+        sprite_map['*s*'] = map(lambda l: sum(l), zip(*sizes))
 
         self.sizes = zip(self.files, sizes)
         cache_tmp = tempfile.NamedTemporaryFile(delete=False, dir=self.ASSETS_ROOT)
